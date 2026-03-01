@@ -1,4 +1,4 @@
-import type { ModelDescriptor, SessionPriority } from '@dust/capacitor-core'
+import type { ModelDescriptor, SessionPriority } from 'dust-core-capacitor'
 
 export const PoolingStrategy = {
   Mean: 'mean',
