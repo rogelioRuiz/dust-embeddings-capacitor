@@ -1,0 +1,8 @@
+node_modules/
+dist/
+android/build/
+android/.gradle/
+android/.cxx/
+.DS_Store
+*.tsbuildinfo
+*.tgz

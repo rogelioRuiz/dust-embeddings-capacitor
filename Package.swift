@@ -1,0 +1,36 @@
+// swift-tools-version: 5.9
+import PackageDescription
+
+let package = Package(
+    name: "DustCapacitorEmbeddings",
+    platforms: [.iOS(.v16), .macOS(.v14)],
+    products: [
+        .library(
+            name: "DustCapacitorEmbeddings",
+            targets: ["EmbeddingsPlugin"]
+        )
+    ],
+    dependencies: [
+        .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", from: "8.0.0"),
+        .package(url: "https://github.com/rogelioRuiz/dust-core-capacitor.git", from: "0.1.0"),
+        .package(url: "https://github.com/rogelioRuiz/dust-core-swift.git", from: "0.1.0"),
+        .package(url: "https://github.com/rogelioRuiz/dust-embeddings-swift.git", from: "0.1.0"),
+        .package(url: "https://github.com/rogelioRuiz/dust-llm-swift.git", branch: "main"),
+        .package(url: "https://github.com/rogelioRuiz/dust-onnx-swift.git", from: "0.1.0"),
+    ],
+    targets: [
+        .target(
+            name: "EmbeddingsPlugin",
+            dependencies: [
+                .product(name: "Capacitor", package: "capacitor-swift-pm"),
+                .product(name: "Cordova", package: "capacitor-swift-pm"),
+                .product(name: "DustCapacitorCore", package: "dust-core-capacitor"),
+                .product(name: "DustCore", package: "dust-core-swift"),
+                .product(name: "DustEmbeddings", package: "dust-embeddings-swift"),
+                .product(name: "DustLlm", package: "dust-llm-swift"),
+                .product(name: "DustOnnx", package: "dust-onnx-swift"),
+            ],
+            path: "ios/Sources/EmbeddingsPlugin"
+        ),
+    ]
+)
