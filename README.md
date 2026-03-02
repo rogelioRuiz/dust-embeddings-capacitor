@@ -14,8 +14,9 @@
 <p align="center">
   <a href="https://github.com/rogelioRuiz/dust/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
   <img alt="Version" src="https://img.shields.io/badge/version-0.1.0-informational">
-  <img alt="npm" src="https://img.shields.io/badge/npm-%40dust%2Fcapacitor--embeddings-cb3837">
+  <img alt="npm" src="https://img.shields.io/badge/npm-dust--embeddings--capacitor-cb3837">
   <img alt="Capacitor" src="https://img.shields.io/badge/Capacitor-7%20%7C%208-119EFF">
+  <a href="https://github.com/rogelioRuiz/dust-embeddings-capacitor/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/rogelioRuiz/dust-embeddings-capacitor/actions/workflows/ci.yml/badge.svg?branch=main"></a>
 </p>
 
 ---
@@ -69,11 +70,11 @@ Capacitor plugin for on-device tokenization and embedding inference — BPE and 
 ## Install
 
 ```bash
-npm install @dust/capacitor-embeddings @dust/capacitor-core
+npm install dust-embeddings-capacitor dust-core-capacitor
 npx cap sync
 ```
 
-`@dust/capacitor-core` is a required peer dependency — it provides the shared ML contract types and the `DustCoreRegistry` that `capacitor-embeddings` uses to register itself as an `EmbeddingService`.
+`dust-core-capacitor` is a required peer dependency — it provides the shared ML contract types and the `DustCoreRegistry` that `capacitor-embeddings` uses to register itself as an `EmbeddingService`.
 
 ### iOS (CocoaPods)
 
@@ -93,7 +94,7 @@ The Kotlin plugin resolves `dust-embeddings-kotlin` and `dust-onnx-kotlin` as lo
 ## Quick Start
 
 ```typescript
-import { EmbeddingPlugin } from '@dust/capacitor-embeddings';
+import { EmbeddingPlugin } from 'dust-embeddings-capacitor';
 
 // Tokenize text
 const { tokens } = await EmbeddingPlugin.tokenize({
@@ -119,7 +120,7 @@ const { score } = await EmbeddingPlugin.cosineSimilarity({ a: embedding, b: othe
 
 ```
 capacitor-embeddings/
-├── package.json                         # v0.1.0, peer deps: @capacitor/core ^7||^8, @dust/capacitor-core >=0.1.0
+├── package.json                         # v0.1.0, peer deps: @capacitor/core ^7||^8, dust-core-capacitor >=0.1.0
 ├── Package.swift                        # SPM: EmbeddingsPlugin target, depends on dust-embeddings-swift
 ├── DustCapacitorEmbeddings.podspec      # CocoaPods: depends on DustEmbeddings, DustCapacitorCore
 ├── src/
@@ -138,7 +139,7 @@ capacitor-embeddings/
 
 ```
 capacitor-embeddings
-  ├── @dust/capacitor-core  (peer)
+  ├── dust-core-capacitor  (peer)
   ├── dust-embeddings-kotlin  (Android native)
   │   ├── dust-core-kotlin
   │   ├── dust-onnx-kotlin
@@ -153,10 +154,10 @@ capacitor-embeddings
 
 | Package | Layer | Purpose |
 |---------|-------|---------|
-| [@dust/capacitor-core](../capacitor-core/README.md) | Bridge | Shared contracts — `EmbeddingService` protocol |
+| [dust-core-capacitor](../capacitor-core/README.md) | Bridge | Shared contracts — `EmbeddingService` protocol |
 | [dust-embeddings-kotlin](../dust-embeddings-kotlin/README.md) | Kotlin | Tokenizers, ONNX embedding sessions, vector math |
 | [dust-embeddings-swift](../dust-embeddings-swift/README.md) | Swift | Tokenizers, ONNX embedding sessions, vector math |
-| [@dust/capacitor-onnx](../capacitor-onnx/README.md) | Bridge | ONNX Runtime model loading (underlying runtime) |
+| [dust-onnx-capacitor](../capacitor-onnx/README.md) | Bridge | ONNX Runtime model loading (underlying runtime) |
 
 ## License
 
