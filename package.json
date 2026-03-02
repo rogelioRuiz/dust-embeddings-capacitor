@@ -1,6 +1,6 @@
 {
   "name": "dust-embeddings-capacitor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Capacitor plugin for on-device embedding model tokenization and inference.",
   "main": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
