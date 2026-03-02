@@ -24,7 +24,7 @@ android {
 
 dependencies {
     implementation project(':capacitor-android')
-    implementation project(':capacitor-core')
+    implementation project(':dust-core-capacitor')
     api 'io.t6x.dust:dust-embeddings-kotlin:0.1.0'
     implementation 'io.t6x.dust:dust-llm-kotlin:0.1.0'
     api 'io.t6x.dust:dust-onnx-kotlin:0.1.0'
