@@ -15,7 +15,7 @@ let package = Package(
         .package(url: "https://github.com/rogelioRuiz/dust-core-capacitor.git", from: "0.1.0"),
         .package(url: "https://github.com/rogelioRuiz/dust-core-swift.git", from: "0.1.0"),
         .package(url: "https://github.com/rogelioRuiz/dust-embeddings-swift.git", from: "0.1.0"),
-        .package(url: "https://github.com/rogelioRuiz/dust-llm-swift.git", branch: "main"),
+        .package(url: "https://github.com/rogelioRuiz/dust-llm-swift.git", from: "0.2.2"),
         .package(url: "https://github.com/rogelioRuiz/dust-onnx-swift.git", from: "0.1.0"),
     ],
     targets: [
