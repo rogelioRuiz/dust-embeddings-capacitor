@@ -4,6 +4,9 @@ import DustCore
 import DustOnnx
 import DustEmbeddings
 import DustLlm
+#if canImport(ServePlugin)
+import ServePlugin
+#endif
 import UIKit
 
 @objc(EmbeddingsPlugin)
@@ -24,6 +27,7 @@ public class EmbeddingsPlugin: CAPPlugin, CAPBridgedPlugin {
     ]
 
     private let sessionManager: EmbeddingSessionManager
+    private let ggufSessionManager = LLMSessionManager()
 
     public override init() {
         let onnxManager = ONNXSessionManager()
@@ -34,6 +38,11 @@ public class EmbeddingsPlugin: CAPPlugin, CAPBridgedPlugin {
     public override func load() {
         super.load()
         DustCoreRegistry.shared.register(embeddingService: sessionManager)
+        #if canImport(ServePlugin)
+        if let servePlugin = bridge?.plugin(withName: "Serve") as? ServePlugin {
+            servePlugin.setSessionFactory(EmbeddingsSessionFactoryAdapter(plugin: self), for: "embeddings")
+        }
+        #endif
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleMemoryWarning),
@@ -77,26 +86,11 @@ public class EmbeddingsPlugin: CAPPlugin, CAPBridgedPlugin {
         EmbeddingSessionManager.inferenceQueue.async {
             do {
                 if format == DustModelFormat.gguf.rawValue {
-                    guard let llmSessionManager = try DustCoreRegistry.shared.resolveModelServer() as? LLMSessionManager else {
-                        call.reject("LLM service not registered", "serviceNotRegistered", nil)
-                        return
-                    }
-
-                    let llmSession = try llmSessionManager.loadModel(
-                        path: modelPath,
+                    let session = try self.loadGGUFEmbeddingModel(
+                        modelPath: modelPath,
                         modelId: modelId,
-                        config: LLMConfig(),
+                        config: config,
                         priority: priority
-                    )
-                    let engine = LlamaSessionGGUFEngine(session: llmSession) {
-                        Task {
-                            try? await llmSessionManager.unloadModel(id: modelId)
-                        }
-                    }
-                    let session = self.sessionManager.loadGGUFModel(
-                        modelId: modelId,
-                        engine: engine,
-                        config: config
                     )
                     call.resolve([
                         "modelId": session.sessionId,
@@ -393,6 +387,43 @@ public class EmbeddingsPlugin: CAPPlugin, CAPBridgedPlugin {
         )
     }
 
+    private static func parseSessionConfig(from descriptor: DustModelDescriptor) throws -> EmbeddingSessionConfig {
+        let metadata = descriptor.metadata
+
+        guard let dims = Self.intValue(in: metadata, for: "dims"), dims > 0 else {
+            throw DustCoreError.invalidInput(detail: "descriptor.metadata.dims is required")
+        }
+        guard let maxSequenceLength = Self.intValue(in: metadata, for: "maxSequenceLength"),
+              maxSequenceLength > 0 else {
+            throw DustCoreError.invalidInput(detail: "descriptor.metadata.maxSequenceLength is required")
+        }
+        guard let tokenizerType = Self.stringValue(in: metadata, for: "tokenizerType") else {
+            throw DustCoreError.invalidInput(detail: "descriptor.metadata.tokenizerType is required")
+        }
+        guard let pooling = Self.stringValue(in: metadata, for: "pooling") else {
+            throw DustCoreError.invalidInput(detail: "descriptor.metadata.pooling is required")
+        }
+        guard let normalize = Self.boolValue(in: metadata, for: "normalize") else {
+            throw DustCoreError.invalidInput(detail: "descriptor.metadata.normalize is required")
+        }
+
+        let inputNames = EmbeddingSessionConfig.InputNames(
+            inputIds: Self.stringValue(in: metadata, for: "inputIds") ?? "input_ids",
+            attentionMask: Self.stringValue(in: metadata, for: "attentionMask") ?? "attention_mask",
+            tokenTypeIds: Self.stringValue(in: metadata, for: "tokenTypeIds") ?? "token_type_ids"
+        )
+
+        return EmbeddingSessionConfig(
+            dims: dims,
+            maxSequenceLength: maxSequenceLength,
+            tokenizerType: tokenizerType,
+            pooling: pooling,
+            normalize: normalize,
+            inputNames: inputNames,
+            outputName: Self.stringValue(in: metadata, for: "outputName") ?? "last_hidden_state"
+        )
+    }
+
     private static func resolveModelPath(from descriptor: [AnyHashable: Any]) -> String? {
         if let url = descriptor["url"] as? String, !url.isEmpty {
             return url
@@ -407,6 +438,14 @@ public class EmbeddingsPlugin: CAPPlugin, CAPBridgedPlugin {
         return nil
     }
 
+    private static func resolveModelPath(from descriptor: DustModelDescriptor) -> String? {
+        if let localPath = descriptor.metadata?["localPath"], !localPath.isEmpty {
+            return localPath
+        }
+
+        return descriptor.url
+    }
+
     private static func resolveTokenizerVocabPath(from descriptor: [AnyHashable: Any]) -> String? {
         if let vocabPath = descriptor["tokenizerVocabUrl"] as? String, !vocabPath.isEmpty {
             return vocabPath
@@ -417,6 +456,19 @@ public class EmbeddingsPlugin: CAPPlugin, CAPBridgedPlugin {
                 return vocabPath
             }
             if let vocabPath = metadata["tokenizerVocabLocalPath"] as? String, !vocabPath.isEmpty {
+                return vocabPath
+            }
+        }
+
+        return nil
+    }
+
+    private static func resolveTokenizerVocabPath(from descriptor: DustModelDescriptor) -> String? {
+        if let metadata = descriptor.metadata {
+            if let vocabPath = metadata["tokenizerVocabPath"], !vocabPath.isEmpty {
+                return vocabPath
+            }
+            if let vocabPath = metadata["tokenizerVocabLocalPath"], !vocabPath.isEmpty {
                 return vocabPath
             }
         }
@@ -439,6 +491,170 @@ public class EmbeddingsPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         return nil
+    }
+
+    private static func resolveTokenizerMergesPath(from descriptor: DustModelDescriptor) -> String? {
+        if let metadata = descriptor.metadata {
+            if let mergesPath = metadata["tokenizerMergesPath"], !mergesPath.isEmpty {
+                return mergesPath
+            }
+            if let mergesPath = metadata["tokenizerMergesLocalPath"], !mergesPath.isEmpty {
+                return mergesPath
+            }
+        }
+
+        return nil
+    }
+
+    private static func stringValue(in metadata: [String: String]?, for key: String) -> String? {
+        guard let value = metadata?[key], !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    private static func intValue(in metadata: [String: String]?, for key: String) -> Int? {
+        guard let value = stringValue(in: metadata, for: key) else {
+            return nil
+        }
+        return Int(value)
+    }
+
+    private static func boolValue(in metadata: [String: String]?, for key: String) -> Bool? {
+        switch stringValue(in: metadata, for: key)?.lowercased() {
+        case "true", "1":
+            return true
+        case "false", "0":
+            return false
+        default:
+            return nil
+        }
+    }
+
+    private func loadGGUFEmbeddingModel(
+        modelPath: String,
+        modelId: String,
+        config: EmbeddingSessionConfig,
+        priority: DustSessionPriority
+    ) throws -> EmbeddingSession {
+        let llmSession = try ggufSessionManager.loadModel(
+            path: modelPath,
+            modelId: modelId,
+            config: LLMConfig(),
+            priority: priority
+        )
+        let engine = LlamaSessionGGUFEngine(session: llmSession) { [weak self] in
+            Task {
+                guard let self else {
+                    return
+                }
+                try? await self.ggufSessionManager.unloadModel(id: modelId)
+            }
+        }
+        return sessionManager.loadGGUFModel(
+            modelId: modelId,
+            engine: engine,
+            config: config
+        )
+    }
+
+    private final class EmbeddingsSessionFactoryAdapter: DustModelSessionFactory, @unchecked Sendable {
+        private weak var plugin: EmbeddingsPlugin?
+
+        init(plugin: EmbeddingsPlugin) {
+            self.plugin = plugin
+        }
+
+        func makeSession(
+            descriptor: DustModelDescriptor,
+            priority: DustSessionPriority
+        ) async throws -> any DustModelSession {
+            guard let plugin else {
+                throw DustCoreError.inferenceFailed(detail: "EmbeddingsPlugin unavailable")
+            }
+
+            guard let modelPath = EmbeddingsPlugin.resolveModelPath(from: descriptor) else {
+                throw DustCoreError.invalidInput(
+                    detail: "descriptor.url or descriptor.metadata.localPath is required"
+                )
+            }
+
+            let config = try EmbeddingsPlugin.parseSessionConfig(from: descriptor)
+
+            switch descriptor.format {
+            case .onnx:
+                guard let vocabPath = EmbeddingsPlugin.resolveTokenizerVocabPath(from: descriptor) else {
+                    throw DustCoreError.invalidInput(
+                        detail: "descriptor.metadata.tokenizerVocabPath is required"
+                    )
+                }
+                let mergesPath = EmbeddingsPlugin.resolveTokenizerMergesPath(from: descriptor)
+                _ = try plugin.sessionManager.loadModel(
+                    modelPath: modelPath,
+                    modelId: descriptor.id,
+                    vocabPath: vocabPath,
+                    mergesPath: mergesPath,
+                    config: config,
+                    onnxConfig: ONNXConfig(),
+                    priority: priority
+                )
+            case .gguf:
+                _ = try plugin.loadGGUFEmbeddingModel(
+                    modelPath: modelPath,
+                    modelId: descriptor.id,
+                    config: config,
+                    priority: priority
+                )
+            default:
+                throw DustCoreError.formatUnsupported
+            }
+
+            return EmbeddingsModelSessionAdapter(
+                modelId: descriptor.id,
+                priority: priority,
+                sessionManager: plugin.sessionManager
+            )
+        }
+    }
+
+    private final class EmbeddingsModelSessionAdapter: DustModelSession, @unchecked Sendable {
+        private let modelId: String
+        private let priorityValue: DustSessionPriority
+        private let sessionManager: EmbeddingSessionManager
+
+        init(
+            modelId: String,
+            priority: DustSessionPriority,
+            sessionManager: EmbeddingSessionManager
+        ) {
+            self.modelId = modelId
+            self.priorityValue = priority
+            self.sessionManager = sessionManager
+        }
+
+        func predict(inputs: [DustInputTensor]) async throws -> [DustOutputTensor] {
+            []
+        }
+
+        func status() -> DustModelStatus {
+            sessionManager.session(for: modelId) == nil ? .notLoaded : .ready
+        }
+
+        func priority() -> DustSessionPriority {
+            priorityValue
+        }
+
+        func close() async throws {
+            do {
+                try sessionManager.unloadModel(id: modelId)
+            } catch let error as DustCoreError where error == .modelNotFound {
+                return
+            }
+
+            if sessionManager.refCount(for: modelId) == 0 {
+                try await sessionManager.forceUnloadModel(id: modelId)
+            }
+        }
     }
 
     private static func decodeRequiredImageData(from imageBase64: String?) throws -> Data {

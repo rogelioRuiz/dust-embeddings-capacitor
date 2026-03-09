@@ -10,9 +10,16 @@ import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import io.t6x.dust.capacitor.serve.ServePlugin
 import io.t6x.dust.core.DustCoreError
 import io.t6x.dust.core.DustCoreRegistry
+import io.t6x.dust.core.DustInputTensor
+import io.t6x.dust.core.DustOutputTensor
+import io.t6x.dust.core.ModelDescriptor
 import io.t6x.dust.core.ModelFormat
+import io.t6x.dust.core.ModelSession
+import io.t6x.dust.core.ModelSessionFactory
+import io.t6x.dust.core.ModelStatus
 import io.t6x.dust.core.SessionPriority
 import io.t6x.dust.embeddings.EmbeddingResult
 import io.t6x.dust.embeddings.EmbeddingSessionConfig
@@ -40,12 +47,15 @@ class EmbeddingsPlugin : Plugin(), ComponentCallbacks2 {
     private lateinit var dispatcher: CoroutineDispatcher
     private lateinit var scope: CoroutineScope
     private val sessionManager = EmbeddingSessionManager(ONNXSessionManager())
+    private val ggufSessionManager = LLMSessionManager()
 
     override fun load() {
         workerThread.start()
         dispatcher = Handler(workerThread.looper).asCoroutineDispatcher()
         scope = CoroutineScope(dispatcher + SupervisorJob())
         DustCoreRegistry.getInstance().registerEmbeddingService(sessionManager)
+        (bridge.getPlugin("Serve")?.getInstance() as? ServePlugin)
+            ?.setSessionFactory(EmbeddingsSessionFactoryAdapter(), "embeddings")
         bridge.context.registerComponentCallbacks(this)
     }
 
@@ -96,22 +106,7 @@ class EmbeddingsPlugin : Plugin(), ComponentCallbacks2 {
         scope.launch {
             try {
                 if (format == ModelFormat.GGUF.value) {
-                    val llmSessionManager = DustCoreRegistry.getInstance().resolveModelServer() as? LLMSessionManager
-                    if (llmSessionManager == null) {
-                        call.reject("LLM service not registered", "serviceNotRegistered")
-                        return@launch
-                    }
-
-                    val llmSession = llmSessionManager.loadModel(modelPath, modelId, LLMConfig(), priority)
-                    val engine = LlamaSessionGGUFEngine(llmSession) {
-                        scope.launch {
-                            try {
-                                llmSessionManager.unloadModel(modelId)
-                            } catch (_: Throwable) {
-                            }
-                        }
-                    }
-                    val session = sessionManager.loadGGUFModel(modelId, engine, config)
+                    val session = loadGGUFEmbeddingModel(modelPath, modelId, config, priority)
                     call.resolve(
                         JSObject()
                             .put("modelId", session.sessionId)
@@ -411,6 +406,36 @@ class EmbeddingsPlugin : Plugin(), ComponentCallbacks2 {
         )
     }
 
+    private fun parseSessionConfig(descriptor: ModelDescriptor): EmbeddingSessionConfig {
+        val metadata = descriptor.metadata
+        val dims = metadata.intValue("dims")
+            ?: throw DustCoreError.InvalidInput("descriptor.metadata.dims is required")
+        val maxSequenceLength = metadata.intValue("maxSequenceLength")
+            ?: throw DustCoreError.InvalidInput("descriptor.metadata.maxSequenceLength is required")
+        val tokenizerType = metadata.stringValue("tokenizerType")
+            ?: throw DustCoreError.InvalidInput("descriptor.metadata.tokenizerType is required")
+        val pooling = metadata.stringValue("pooling")
+            ?: throw DustCoreError.InvalidInput("descriptor.metadata.pooling is required")
+        val normalize = metadata.booleanValue("normalize")
+            ?: throw DustCoreError.InvalidInput("descriptor.metadata.normalize is required")
+
+        val inputNames = EmbeddingSessionConfig.InputNames(
+            inputIds = metadata.stringValue("inputIds") ?: "input_ids",
+            attentionMask = metadata.stringValue("attentionMask") ?: "attention_mask",
+            tokenTypeIds = metadata.stringValue("tokenTypeIds") ?: "token_type_ids",
+        )
+
+        return EmbeddingSessionConfig(
+            dims = dims,
+            maxSequenceLength = maxSequenceLength,
+            tokenizerType = tokenizerType,
+            pooling = pooling,
+            normalize = normalize,
+            inputNames = inputNames,
+            outputName = metadata.stringValue("outputName") ?: "last_hidden_state",
+        )
+    }
+
     private fun resolveModelPath(descriptor: JSObject?): String? {
         if (descriptor == null) {
             return null
@@ -428,6 +453,15 @@ class EmbeddingsPlugin : Plugin(), ComponentCallbacks2 {
         }
 
         return null
+    }
+
+    private fun resolveModelPath(descriptor: ModelDescriptor): String? {
+        val localPath = descriptor.metadata?.get("localPath")
+        if (!localPath.isNullOrEmpty()) {
+            return localPath
+        }
+
+        return descriptor.url
     }
 
     private fun resolveTokenizerVocabPath(descriptor: JSObject?): String? {
@@ -450,6 +484,12 @@ class EmbeddingsPlugin : Plugin(), ComponentCallbacks2 {
         return null
     }
 
+    private fun resolveTokenizerVocabPath(descriptor: ModelDescriptor): String? {
+        val metadata = descriptor.metadata
+        return metadata.stringValue("tokenizerVocabPath")
+            ?: metadata.stringValue("tokenizerVocabLocalPath")
+    }
+
     private fun resolveTokenizerMergesPath(descriptor: JSObject?): String? {
         if (descriptor == null) {
             return null
@@ -468,6 +508,106 @@ class EmbeddingsPlugin : Plugin(), ComponentCallbacks2 {
         }
 
         return null
+    }
+
+    private fun resolveTokenizerMergesPath(descriptor: ModelDescriptor): String? {
+        val metadata = descriptor.metadata
+        return metadata.stringValue("tokenizerMergesPath")
+            ?: metadata.stringValue("tokenizerMergesLocalPath")
+    }
+
+    private fun loadGGUFEmbeddingModel(
+        modelPath: String,
+        modelId: String,
+        config: EmbeddingSessionConfig,
+        priority: SessionPriority,
+    ) = sessionManager.loadGGUFModel(
+        modelId = modelId,
+        engine = LlamaSessionGGUFEngine(
+            ggufSessionManager.loadModel(modelPath, modelId, LLMConfig(), priority),
+        ) {
+            scope.launch {
+                try {
+                    ggufSessionManager.unloadModel(modelId)
+                } catch (_: Throwable) {
+                }
+            }
+        },
+        config = config,
+    )
+
+    private fun Map<String, String>?.stringValue(key: String): String? =
+        this?.get(key)?.takeIf { it.isNotEmpty() }
+
+    private fun Map<String, String>?.intValue(key: String): Int? =
+        stringValue(key)?.toIntOrNull()
+
+    private fun Map<String, String>?.booleanValue(key: String): Boolean? =
+        when (stringValue(key)?.lowercase()) {
+            "true", "1" -> true
+            "false", "0" -> false
+            else -> null
+        }
+
+    private inner class EmbeddingsSessionFactoryAdapter : ModelSessionFactory {
+        override suspend fun makeSession(descriptor: ModelDescriptor, priority: SessionPriority): ModelSession {
+            val modelPath = resolveModelPath(descriptor)
+                ?: throw DustCoreError.InvalidInput("descriptor.url or descriptor.metadata.localPath is required")
+            val config = parseSessionConfig(descriptor)
+
+            when (descriptor.format) {
+                ModelFormat.ONNX -> {
+                    val vocabPath = resolveTokenizerVocabPath(descriptor)
+                        ?: throw DustCoreError.InvalidInput("descriptor.metadata.tokenizerVocabPath is required")
+                    val mergesPath = resolveTokenizerMergesPath(descriptor)
+                    sessionManager.loadModel(
+                        modelPath = modelPath,
+                        modelId = descriptor.id,
+                        vocabPath = vocabPath,
+                        mergesPath = mergesPath,
+                        config = config,
+                        onnxConfig = ONNXConfig(),
+                        priority = priority,
+                    )
+                }
+                ModelFormat.GGUF -> loadGGUFEmbeddingModel(modelPath, descriptor.id, config, priority)
+                else -> throw DustCoreError.FormatUnsupported
+            }
+
+            return EmbeddingsModelSessionAdapter(descriptor.id, priority)
+        }
+    }
+
+    private inner class EmbeddingsModelSessionAdapter(
+        private val modelId: String,
+        private val sessionPriority: SessionPriority,
+    ) : ModelSession {
+        override suspend fun predict(inputs: List<DustInputTensor>): List<DustOutputTensor> = emptyList()
+
+        override fun status(): ModelStatus {
+            return if (sessionManager.session(modelId) != null) {
+                ModelStatus.Ready
+            } else {
+                ModelStatus.NotLoaded
+            }
+        }
+
+        override fun priority(): SessionPriority = sessionPriority
+
+        override suspend fun close() {
+            try {
+                sessionManager.unloadModel(modelId)
+            } catch (error: DustCoreError) {
+                if (error !is DustCoreError.ModelNotFound) {
+                    throw error
+                }
+                return
+            }
+
+            if (sessionManager.refCount(modelId) == 0) {
+                sessionManager.forceUnloadModel(modelId)
+            }
+        }
     }
 
     private fun decodeImageBytes(imageBase64: String?): ByteArray {
